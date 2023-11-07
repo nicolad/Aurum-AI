@@ -1,67 +1,36 @@
-import { kv } from '@vercel/kv'
-import { OpenAIStream, StreamingTextResponse } from 'ai'
-import { Configuration, OpenAIApi } from 'openai-edge'
+import { NextResponse } from 'next/server'
 
-import { auth } from '@/auth'
-import { nanoid } from '@/lib/utils'
+import OpenAI from 'openai'
 
 export const runtime = 'edge'
 
-const configuration = new Configuration({
+const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY
 })
 
-const openai = new OpenAIApi(configuration)
-
 export async function POST(req: Request) {
-  const json = await req.json()
-  const { messages, previewToken } = json
-  const userId = (await auth())?.user.id
-
-  if (!userId) {
-    return new Response('Unauthorized', {
-      status: 401
-    })
-  }
-
-  if (previewToken) {
-    configuration.apiKey = previewToken
-  }
-
-  const res = await openai.createChatCompletion({
-    model: 'gpt-3.5-turbo',
-    messages,
-    temperature: 0.7,
-    stream: true
+  const math_tutor_assistant = await openai.beta.assistants.create({
+    instructions:
+      'You are a personal math tutor. When asked a question, write and run Python code to answer the question.',
+    name: 'Math Tutor',
+    tools: [{ type: 'code_interpreter' }],
+    model: 'gpt-4'
   })
 
-  const stream = OpenAIStream(res, {
-    async onCompletion(completion) {
-      const title = json.messages[0].content.substring(0, 100)
-      const id = json.id ?? nanoid()
-      const createdAt = Date.now()
-      const path = `/chat/${id}`
-      const payload = {
-        id,
-        title,
-        userId,
-        createdAt,
-        path,
-        messages: [
-          ...messages,
-          {
-            content: completion,
-            role: 'assistant'
-          }
-        ]
-      }
-      await kv.hmset(`chat:${id}`, payload)
-      await kv.zadd(`user:chat:${userId}`, {
-        score: createdAt,
-        member: `chat:${id}`
-      })
-    }
+  const thread = await openai.beta.threads.create({})
+
+  await openai.beta.threads.messages.create(thread.id, {
+    role: 'user',
+    content: 'I need to solve the equation `3x + 11 = 14`. Can you help me?'
   })
 
-  return new StreamingTextResponse(stream)
+  await openai.beta.threads.runs.create(thread.id, {
+    assistant_id: math_tutor_assistant.id,
+    instructions:
+      'Please address the user as Jane Doe. The user has a premium account. Return also the Python code that you used to solve the equation.'
+  })
+
+  return NextResponse.json({
+    id: thread.id
+  })
 }
